@@ -21,6 +21,11 @@ export function loadConfig(env = process.env) {
     stateFile: env.STATE_FILE || '/data/state.json',
     githubWebUrl: (env.GITHUB_WEB_URL || 'https://github.com').replace(/\/+$/, ''),
     githubApiUrl: (env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/, ''),
+    githubRawUrl: (env.GITHUB_RAW_URL || 'https://raw.githubusercontent.com').replace(/\/+$/, ''),
+    // E-mail time: Railway cron runs in UTC, so the job is scheduled at both UTC hours that can
+    // be SEND_HOUR in TIME_ZONE (winter and summer time) and the wrong one exits early.
+    sendHour: int(env.SEND_HOUR, 16),
+    timeZone: env.TIME_ZONE || 'Europe/Paris',
     railwayIndexUrl: env.RAILWAY_INDEX_URL || 'https://railway.com/deploy/index.json',
     resendApiUrl: env.RESEND_API_URL || 'https://api.resend.com/emails',
     searchDelayMs: int(env.SEARCH_DELAY_MS, env.GITHUB_TOKEN ? 2500 : 7000),

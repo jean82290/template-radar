@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseTrending } from '../src/github.js';
+import { parseTrending, servesFromDockerfile } from '../src/github.js';
+import { isWrongScheduledSlot } from '../src/index.js';
 import { isAI, deployability, weeklyStars, score } from '../src/score.js';
 import { railwayMatches, normalize } from '../src/railway.js';
 import { buildDigest } from '../src/email.js';
@@ -70,6 +71,33 @@ test('AI detection, deployability and scoring', () => {
   assert.equal(score({ ...base, deploy: { level: 'no' }, railway: { count: 0 } }), 0);
 });
 
+test('only servers count as deployable (cases from the first real e-mail)', () => {
+  // Graphify: its Dockerfile EXPOSEs 8080 and starts an HTTP server.
+  assert.ok(servesFromDockerfile('FROM python:3.12-slim\nEXPOSE 8080\nENTRYPOINT ["python","-m","graphify.serve"]'));
+  assert.equal(deployability({ description: 'Turn any codebase into a queryable knowledge graph', files: ['Dockerfile'], dockerServes: true }).level, 'docker');
+  // SkillSpector: Dockerfile runs a one-shot scanner, no port.
+  assert.ok(!servesFromDockerfile('FROM python:3.12-slim-bookworm\nENTRYPOINT ["skillspector"]\nCMD ["scan", "/scan"]'));
+  assert.ok(['weak', 'no'].includes(deployability({ description: 'Security scanner for AI agent skills', files: ['Dockerfile', 'pyproject.toml'], dockerServes: false }).level));
+  assert.equal(deployability({ description: 'Fast code indexer for AI agents', files: ['Dockerfile'], dockerServes: false }).level, 'weak');
+  // SolidCraft: desktop/browser CAD app with an MCP server, no Dockerfile.
+  assert.equal(deployability({ description: 'Open-source parametric 3D CAD application in Rust with an MCP server', topics: ['cad', 'wasm'], files: ['Cargo.toml'] }).level, 'no');
+  // Compose files with port mappings count as servers.
+  assert.equal(deployability({ description: 'Self-hosted AI chat', files: ['docker-compose.yml'], dockerServes: true }).level, 'docker');
+});
+
+test('e-mail goes out at 16:00 Paris time in winter and in summer', () => {
+  const opts = { sendHour: 16, timeZone: 'Europe/Paris' };
+  // Winter (UTC+1): 14:00 UTC = 15:00 Paris -> skip, 15:00 UTC = 16:00 Paris -> send.
+  assert.equal(isWrongScheduledSlot(new Date('2026-11-02T14:00:05Z'), opts), true);
+  assert.equal(isWrongScheduledSlot(new Date('2026-11-02T15:00:05Z'), opts), false);
+  // Summer (UTC+2): 14:00 UTC = 16:00 Paris -> send, 15:00 UTC = 17:00 Paris -> skip.
+  assert.equal(isWrongScheduledSlot(new Date('2027-06-07T14:00:05Z'), opts), false);
+  assert.equal(isWrongScheduledSlot(new Date('2027-06-07T15:00:05Z'), opts), true);
+  // A manual "Run now" at another time is never skipped.
+  assert.equal(isWrongScheduledSlot(new Date('2026-11-02T14:37:00Z'), opts), false);
+  assert.equal(isWrongScheduledSlot(new Date('2026-10-29T21:00:00Z'), opts), false);
+});
+
 test('Railway matching by name', () => {
   const index = ['Hermes Agent by Nous Research', 'Hermes Agent', 'N8N (w/ workers)', 'Open WebUI'].map((name) => ({ name, key: normalize(name) }));
   assert.deepEqual(railwayMatches(index, 'NousResearch/hermes-agent').count, 2);
@@ -99,6 +127,7 @@ test('end-to-end weekly run with fake GitHub, Railway and Resend', async () => {
       { name: 'php/php-src', desc: 'The PHP Interpreter', lang: 'C', stars: '41,000', week: '1,200' },
       { name: 'nous/hermes-agent', desc: 'Autonomous AI agent with tools', lang: 'Python', stars: '50,000', week: '9,000' },
       { name: 'cool/llm-sdk', desc: 'Python SDK for LLM apps', lang: 'Python', stars: '8,000', week: '2,500' },
+      { name: 'sec/ai-scanner', desc: 'Security scanner for AI agents', lang: 'Python', stars: '20,000', week: '9,500' },
     ]),
   };
   const repos = {
@@ -106,6 +135,13 @@ test('end-to-end weekly run with fake GitHub, Railway and Resend', async () => {
     'nous/hermes-agent': { files: ['Dockerfile'], created_at: '2026-01-01T00:00:00Z' },
     'cool/llm-sdk': { files: ['pyproject.toml'], created_at: '2026-06-01T00:00:00Z' },
     'fresh/rag-server': { files: ['docker-compose.yml'], created_at: '2026-10-28T00:00:00Z' },
+    'sec/ai-scanner': { files: ['Dockerfile', 'pyproject.toml'], created_at: '2026-09-01T00:00:00Z' },
+  };
+  const rawFiles = {
+    'acme/agent-hub/Dockerfile': 'FROM node:22\nEXPOSE 3000\nCMD ["node","server.js"]',
+    'nous/hermes-agent/Dockerfile': 'FROM python:3.12\nCMD ["uvicorn","app:app","--host","0.0.0.0"]',
+    'fresh/rag-server/docker-compose.yml': 'services:\n  app:\n    build: .\n    ports:\n      - "8000:8000"\n',
+    'sec/ai-scanner/Dockerfile': 'FROM python:3.12\nENTRYPOINT ["ai-scanner"]\nCMD ["scan","/src"]',
   };
 
   const fakeFetch = async (url, init = {}) => {
@@ -127,6 +163,10 @@ test('end-to-end weekly run with fake GitHub, Railway and Resend', async () => {
       if (m[2]) return json(r.files.map((name) => ({ name, type: 'file' })));
       return json({ created_at: r.created_at, topics: [], stargazers_count: 0, archived: false, fork: false });
     }
+    if (u.host === 'raw.test') {
+      const body = rawFiles[u.pathname.replace(/^\//, '').replace('/HEAD/', '/')];
+      return body === undefined ? new Response('404', { status: 404 }) : new Response(body, { status: 200 });
+    }
     if (u.host === 'railway.test') {
       return json([{ slug: 'a', name: 'Hermes Agent by Nous Research' }, { slug: 'b', name: 'Hermes Agent' }, { slug: 'c', name: 'Hermes Agent (Updated)' }]);
     }
@@ -140,7 +180,7 @@ test('end-to-end weekly run with fake GitHub, Railway and Resend', async () => {
 
   const dir = await mkdtemp(join(tmpdir(), 'radar-'));
   const env = {
-    GITHUB_WEB_URL: 'http://gh.test', GITHUB_API_URL: 'http://api.test', RAILWAY_INDEX_URL: 'http://railway.test/index.json',
+    GITHUB_WEB_URL: 'http://gh.test', GITHUB_API_URL: 'http://api.test', GITHUB_RAW_URL: 'http://raw.test', RAILWAY_INDEX_URL: 'http://railway.test/index.json',
     RESEND_API_URL: 'http://resend.test/emails', RESEND_API_KEY: 're_test', EMAIL_TO: 'me@example.com',
     STATE_FILE: join(dir, 'state.json'), TRENDING_LANGUAGES: ',python', SEARCH_DELAY_MS: '0',
   };
@@ -149,7 +189,7 @@ test('end-to-end weekly run with fake GitHub, Railway and Resend', async () => {
 
   const first = await run({ env, fetchImpl: fakeFetch, log: quiet, now, sleep: async () => {} });
   const names = first.picks.map((p) => p.fullName);
-  assert.deepEqual(names, ['acme/agent-hub', 'nous/hermes-agent', 'fresh/rag-server'], 'ranked by score, PHP and the SDK filtered out');
+  assert.deepEqual(names, ['acme/agent-hub', 'nous/hermes-agent', 'fresh/rag-server'], 'ranked by score; PHP, the SDK and the CLI scanner (Dockerfile without port) filtered out');
   assert.equal(first.picks[0].railway.count, 0);
   assert.equal(first.picks[1].railway.count, 3);
   assert.equal(sent.length, 1);

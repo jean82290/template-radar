@@ -104,13 +104,15 @@ export function createGitHub(config, { fetchImpl = fetch, sleep = (ms) => new Pr
       return [...all.values()];
     },
 
-    // Root file names, topics, creation date, archive and fork flags for one repository.
+    // Root file names, topics, creation date, archive and fork flags for one repository,
+    // plus whether its Docker setup actually serves something on a port.
     async details(fullName) {
       const [repo, contents] = await Promise.all([
         api(`/repos/${fullName}`),
         api(`/repos/${fullName}/contents/`),
       ]);
       if (!repo) return null;
+      const files = Array.isArray(contents) ? contents.map((c) => c.name) : [];
       return {
         createdAt: repo.created_at,
         topics: repo.topics || [],
@@ -119,8 +121,37 @@ export function createGitHub(config, { fetchImpl = fetch, sleep = (ms) => new Pr
         fork: Boolean(repo.fork),
         license: repo.license?.spdx_id || '',
         stars: repo.stargazers_count,
-        files: Array.isArray(contents) ? contents.map((c) => c.name) : [],
+        files,
+        dockerServes: await dockerServes(fullName, files),
       };
     },
   };
+
+  // Raw file contents come from raw.githubusercontent.com, which does not use the API quota.
+  async function raw(fullName, path) {
+    try {
+      const res = await fetchImpl(`${config.githubRawUrl}/${fullName}/HEAD/${path}`, {
+        headers: { 'user-agent': 'template-radar' },
+        signal: AbortSignal.timeout(15000),
+      });
+      return res.ok ? (await res.text()).slice(0, 200000) : '';
+    } catch {
+      return '';
+    }
+  }
+
+  // A Dockerfile that only runs a one-shot command (a scanner, a CLI) is not a template.
+  // It serves something when it EXPOSEs a port, starts a web server, or compose maps ports.
+  async function dockerServes(fullName, files) {
+    const dockerfile = files.find((f) => /^dockerfile$/i.test(f));
+    const compose = files.find((f) => /^(docker-)?compose\.ya?ml$/i.test(f));
+    if (dockerfile && servesFromDockerfile(await raw(fullName, dockerfile))) return true;
+    if (compose && /^\s*ports\s*:/m.test(await raw(fullName, compose))) return true;
+    return false;
+  }
+}
+
+export function servesFromDockerfile(text) {
+  return /^\s*EXPOSE\s+\S+/mi.test(text)
+    || /\b(uvicorn|gunicorn|hypercorn|--port\b|--listen\b|--host[= ]0\.0\.0\.0|next start|serve\b)/i.test(text);
 }

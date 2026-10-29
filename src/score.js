@@ -6,7 +6,9 @@ const AI_TOPICS = /^(ai|llm|llms|ai-agent|ai-agents|agents|agent|mcp|rag|generat
 
 const SERVER_WORDS = /\b(self[- ]?host(?:ed|able)?|server|web ?ui|webui|dashboard|platform|gateway|proxy|api|backend|bot|service|app|workflow|automation|chat ui|studio|playground|hub|router)\b/i;
 const NOT_DEPLOYABLE = /\b(awesome|curated list|list of|tutorials?|course|paper|papers|dataset|benchmark|prompts?|cheat ?sheet|roadmap|book|interview|notes|guide|skills?)\b/i;
-const LIBRARY_WORDS = /\b(library|sdk|framework|cli|command[- ]line|vs ?code|extension|plugin|python package|npm package|desktop app|ios|android|chrome extension)\b/i;
+const LIBRARY_WORDS = /\b(library|sdk|framework|cli|command[- ]line|vs ?code|extension|plugin|python package|npm package|desktop app|ios|android|chrome extension|scanner|linter)\b/i;
+// Things that run on the user's own machine or in their browser: nothing to host on Railway.
+const LOCAL_APP_WORDS = /\b(desktop|games?|cad|3d model(?:l)?ing|parametric|wasm|webassembly|browser extension|chrome extension|firefox add-?on|vs ?code|neovim|vim|emacs|jetbrains|ios|android|mobile app|macos app|windows app|electron|tauri|egui|game engine)\b/i;
 
 const DOCKER_FILES = /^(dockerfile|docker-compose\.ya?ml|compose\.ya?ml)$/i;
 const RAILWAY_FILES = /^(railway\.json|railway\.toml)$/i;
@@ -21,13 +23,15 @@ export function isAI(repo) {
 export function deployability(repo) {
   const files = repo.files || [];
   const text = `${repo.description || ''} ${(repo.topics || []).join(' ')}`;
-  const reasons = [];
   const docker = files.find((f) => DOCKER_FILES.test(f));
   const railway = files.find((f) => RAILWAY_FILES.test(f));
-  if (docker) reasons.push(docker);
-  if (railway) reasons.push(railway);
-  if (NOT_DEPLOYABLE.test(text) && !docker) return { level: 'no', reasons: ['liste, cours ou contenu'] };
-  if (docker || railway) return { level: 'docker', reasons };
+  // dockerServes is known only after details(); undefined means "not checked" and keeps the old behaviour.
+  const serves = railway || (docker && repo.dockerServes !== false);
+
+  if (serves) return { level: 'docker', reasons: [railway || docker, ...(repo.dockerServes ? ['ouvre un port'] : [])] };
+  if (LOCAL_APP_WORDS.test(text)) return { level: 'no', reasons: ['application de bureau, navigateur ou jeu'] };
+  if (NOT_DEPLOYABLE.test(text)) return { level: 'no', reasons: ['liste, cours ou contenu'] };
+  if (docker) return { level: 'weak', reasons: ['Dockerfile sans port : outil en ligne de commande'] };
   const server = SERVER_WORDS.test(text);
   const runtime = files.some((f) => RUNTIME_FILES.test(f));
   if (server && runtime && !LIBRARY_WORDS.test(text)) return { level: 'server', reasons: ['serveur sans Dockerfile'] };

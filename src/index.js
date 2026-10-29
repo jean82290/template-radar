@@ -50,7 +50,7 @@ export async function run({ env = process.env, fetchImpl = fetch, sleep, log = c
     if (details?.archived || details?.fork) continue;
     const repo = {
       ...r,
-      ...(details ? { createdAt: details.createdAt, topics: details.topics.length ? details.topics : r.topics, files: details.files, stars: details.stars || r.stars } : {}),
+      ...(details ? { createdAt: details.createdAt, topics: details.topics.length ? details.topics : r.topics, files: details.files, dockerServes: details.dockerServes, stars: details.stars || r.stars } : {}),
     };
     repo.weekly = weeklyStars(repo, now);
     repo.deploy = deployability(repo);
@@ -83,7 +83,29 @@ export async function run({ env = process.env, fetchImpl = fetch, sleep, log = c
   return { picks, digest, result, errors };
 }
 
+function localParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'short', hour: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  return { weekday: get('weekday'), hour: Number(get('hour')) };
+}
+
+/**
+ * The cron fires on Monday at the two UTC hours that can be SEND_HOUR local time (winter and
+ * summer time). The run whose local hour is one off from SEND_HOUR is the wrong one and stops.
+ * Manual runs at any other time are never skipped.
+ */
+export function isWrongScheduledSlot(now, { sendHour, timeZone }) {
+  if (now.getUTCMinutes() >= 10) return false; // cron fires at minute 0
+  const { weekday, hour } = localParts(now, timeZone);
+  return weekday === 'Mon' && Math.abs(hour - sendHour) === 1;
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  const cfg = loadConfig();
+  if (isWrongScheduledSlot(new Date(), cfg)) {
+    console.log(`[radar] not ${cfg.sendHour}:00 in ${cfg.timeZone} yet (summer/winter time slot), skipping this run.`);
+    process.exit(0);
+  }
   run()
     .then(() => process.exit(0))
     .catch((err) => {
