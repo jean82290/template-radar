@@ -1,0 +1,15 @@
+{
+  "name": "template-radar",
+  "version": "1.0.0",
+  "description": "Weekly radar of exploding AI repositories on GitHub that have no Railway template yet. Sends a French e-mail digest.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
