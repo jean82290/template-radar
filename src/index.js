@@ -64,14 +64,17 @@ export async function run({ env = process.env, fetchImpl = fetch, sleep, log = c
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, config.maxResults)
-    .map((r) => ({ ...r, isNew: !state.reported[r.fullName.toLowerCase()] }));
+    .map((r) => ({ ...r, isNew: !state.reported[r.fullName.toLowerCase()]?.emailed }));
 
   const digest = buildDigest(picks, { now, scanned: byName.size, errors });
   const result = await sendEmail(config, digest, { fetchImpl, log });
 
-  for (const p of picks) {
-    const k = p.fullName.toLowerCase();
-    state.reported[k] = { firstReported: state.reported[k]?.firstReported || now.toISOString(), lastScore: p.score };
+  // Only an e-mail that actually left counts as "reported"; a dry run (no Resend key) changes nothing.
+  if (result.sent) {
+    for (const p of picks) {
+      const k = p.fullName.toLowerCase();
+      state.reported[k] = { firstReported: state.reported[k]?.emailed ? state.reported[k].firstReported : now.toISOString(), lastScore: p.score, emailed: true };
+    }
   }
   state.runs.push({ at: now.toISOString(), picks: picks.length, scanned: byName.size, sent: result.sent });
   await saveState(config.stateFile, state, log);

@@ -164,6 +164,13 @@ test('end-to-end weekly run with fake GitHub, Railway and Resend', async () => {
   const second = await run({ env, fetchImpl: fakeFetch, log: quiet, now: new Date('2026-11-09T06:00:00Z'), sleep: async () => {} });
   assert.ok(second.picks.every((p) => !p.isNew), 'a week later the same repos are marked as already reported');
   assert.match(sent[1].subject, /\(0 nouveau\)/);
+
+  // A dry run (no Resend key) must not mark anything as reported.
+  const dryState = join(dir, 'dry.json');
+  const dryEnv = { ...env, RESEND_API_KEY: '', STATE_FILE: dryState };
+  await run({ env: dryEnv, fetchImpl: fakeFetch, log: quiet, now, sleep: async () => {} });
+  const afterDry = await run({ env: { ...dryEnv, RESEND_API_KEY: 're_test' }, fetchImpl: fakeFetch, log: quiet, now, sleep: async () => {} });
+  assert.ok(afterDry.picks.every((p) => p.isNew), 'picks found during a dry run are still new in the first real e-mail');
 });
 
 test('without Resend settings the digest is printed, not sent', async () => {
